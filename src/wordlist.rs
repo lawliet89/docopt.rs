@@ -53,7 +53,7 @@ Which will only include 'a', 'b' and 'c' in the wordlist if
 'your-command --help' contains a positional argument named 'arg'.
 ";
 
-#[derive(Debug, RustcDecodable)]
+#[derive(Debug, Deserialize)]
 struct Args {
     arg_name: Vec<String>,
     arg_possibles: Vec<String>,

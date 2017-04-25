@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::str::FromStr;
 
 use regex::{Captures, Regex};
-use rustc_serialize::Decodable;
+use serde::de::{Deserialize, DeserializeOwned, Visitor, MapAccess};
 
 use parse::Parser;
 use synonym::SynonymMap;
@@ -197,7 +197,7 @@ impl Docopt {
     ///
     /// For details on how decoding works, please see the documentation for
     /// `ArgvMap`.
-    pub fn decode<D>(&self) -> Result<D, Error> where D: Decodable {
+    pub fn decode<D>(&self) -> Result<D, Error> where D: DeserializeOwned {
         self.parse().and_then(|vals| vals.decode())
     }
 
@@ -355,7 +355,7 @@ impl ArgvMap {
     ///          -h, --help
     /// ";
     ///
-    /// #[derive(RustcDecodable)]
+    /// #[derive(Deserialize)]
     /// struct Args {
     ///   cmd_build: bool,
     ///   cmd_test: bool,
@@ -377,8 +377,8 @@ impl ArgvMap {
     ///
     /// In this example, only the `bool` type was used, but any type satisfying
     /// the `Decodable` trait is valid.
-    pub fn decode<T: Decodable>(self) -> Result<T, Error> {
-        Decodable::decode(&mut Decoder { vals: self, stack: vec!() })
+    pub fn decode<T: DeserializeOwned>(self) -> Result<T, Error> {
+        T::deserialize(Deserializer { vals: self, stack: vec!() })
     }
 
     /// Finds the value corresponding to `key` and calls `as_bool()` on it.
@@ -631,7 +631,7 @@ impl Value {
 ///            .and_then(|d| d.argv(argv.iter().cloned()).decode())
 /// }
 /// # }
-pub struct Decoder {
+pub struct Deserializer {
     vals: ArgvMap,
     stack: Vec<DecoderItem>,
 }
@@ -647,7 +647,7 @@ macro_rules! derr(
     ($($arg:tt)*) => (return Err(Decode(format!($($arg)*))))
 );
 
-impl Decoder {
+impl Deserializer {
     fn push(&mut self, struct_field: &str) {
         let key = ArgvMap::struct_field_to_key(struct_field);
         self.stack.push(DecoderItem {
@@ -725,172 +725,186 @@ macro_rules! read_num {
     );
 }
 
-impl ::rustc_serialize::Decoder for Decoder {
+impl<'de> ::serde::de::Deserializer<'de> for Deserializer {
     type Error = Error;
 
-    fn error(&mut self, err: &str) -> Error {
-        Decode(err.into())
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Error>
+        where V: Visitor<'de>
+    {
+        self.deserialize_map(visitor)
     }
 
-    fn read_nil(&mut self) -> Result<(), Error> {
-        // I don't know what the right thing is here, so just fail for now.
-        panic!("I don't know how to read into a nil value.")
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Error>
+        where V: Visitor<'de>
+    {
+        visitor.visit_map(self.vals)
     }
 
-    read_num!(read_usize, usize);
-    read_num!(read_u64, u64);
-    read_num!(read_u32, u32);
-    read_num!(read_u16, u16);
-    read_num!(read_u8, u8);
-    read_num!(read_isize, isize);
-    read_num!(read_i64, i64);
-    read_num!(read_i32, i32);
-    read_num!(read_i16, i16);
-    read_num!(read_i8, i8);
-
-    fn read_bool(&mut self) -> Result<bool, Error> {
-        self.pop_val().map(|v| v.as_bool())
-    }
-
-    fn read_f64(&mut self) -> Result<f64, Error> {
-        self.to_float("f64")
-    }
-
-    fn read_f32(&mut self) -> Result<f32, Error> {
-        self.to_float("f32").map(|n| n as f32)
-    }
-
-    fn read_char(&mut self) -> Result<char, Error> {
-        let (k, v) = try!(self.pop_key_val());
-        let vstr = v.as_str();
-        match vstr.chars().count() {
-            1 => Ok(vstr.chars().next().unwrap()),
-            _ => derr!("Could not decode '{}' into char for '{}'.", vstr, k),
-        }
-    }
-
-    fn read_str(&mut self) -> Result<String, Error> {
-        self.pop_val().map(|v| v.as_str().into())
-    }
-
-    fn read_enum<T, F>(&mut self, _: &str, f: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        f(self)
-    }
-
-    fn read_enum_variant<T, F>(&mut self, names: &[&str], mut f: F)
-                              -> Result<T, Error>
-            where F: FnMut(&mut Decoder, usize) -> Result<T, Error> {
-        let v = to_lowercase(try!(self.pop_val()).as_str());
-        let i =
-            match names.iter().map(|&n| to_lowercase(n)).position(|n| n == v) {
-                Some(i) => i,
-                None => {
-                    derr!("Could not match '{}' with any of \
-                           the allowed variants: {:?}", v, names)
-                }
-            };
-        f(self, i)
-    }
-
-    fn read_enum_variant_arg<T, F>(&mut self, _: usize, _: F)
-                                  -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_enum_struct_variant<T, F>(&mut self, _: &[&str], _: F)
-                                     -> Result<T, Error>
-            where F: FnMut(&mut Decoder, usize) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_enum_struct_variant_field<T, F>(&mut self, _: &str, _: usize, _: F)
-                                           -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_struct<T, F>(&mut self, _: &str, _: usize, f: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        f(self)
-    }
-
-    fn read_struct_field<T, F>(&mut self, f_name: &str, _: usize, f: F)
-                              -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        self.push(f_name);
-        f(self)
-    }
-
-    fn read_tuple<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_tuple_arg<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_tuple_struct<T, F>(&mut self, _: &str, _: usize, _: F)
-                              -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_tuple_struct_arg<T, F>(&mut self, _: usize, _: F)
-                                  -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_option<T, F>(&mut self, mut f: F) -> Result<T, Error>
-            where F: FnMut(&mut Decoder, bool) -> Result<T, Error> {
-        let option =
-            match self.stack.last() {
-                None => derr!("Could not decode value into unknown key."),
-                Some(it) => it.val.as_ref()
-                                  .map_or(false, |v| v.as_bool())
-            };
-        f(self, option)
-    }
-
-    fn read_seq<T, F>(&mut self, f: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder, usize) -> Result<T, Error> {
-        let it = try!(self.pop());
-        let list = it.val.unwrap_or(List(vec!()));
-        let vals = list.as_vec();
-        for val in vals.iter().rev() {
-            self.stack.push(DecoderItem {
-                key: it.key.clone(),
-                struct_field: it.struct_field.clone(),
-                val: Some(Plain(Some((*val).into()))),
-            })
-        }
-        f(self, vals.len())
-    }
-
-    fn read_seq_elt<T, F>(&mut self, _: usize, f: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        f(self)
-    }
-
-    fn read_map<T, F>(&mut self, _: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder, usize) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_map_elt_key<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
-
-    fn read_map_elt_val<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
-            where F: FnOnce(&mut Decoder) -> Result<T, Error> {
-        unimplemented!()
-    }
 }
+
+//     fn error(&mut self, err: &str) -> Error {
+//         Decode(err.into())
+//     }
+
+//     fn read_nil(&mut self) -> Result<(), Error> {
+//         // I don't know what the right thing is here, so just fail for now.
+//         panic!("I don't know how to read into a nil value.")
+//     }
+
+//     read_num!(read_usize, usize);
+//     read_num!(read_u64, u64);
+//     read_num!(read_u32, u32);
+//     read_num!(read_u16, u16);
+//     read_num!(read_u8, u8);
+//     read_num!(read_isize, isize);
+//     read_num!(read_i64, i64);
+//     read_num!(read_i32, i32);
+//     read_num!(read_i16, i16);
+//     read_num!(read_i8, i8);
+
+//     fn read_bool(&mut self) -> Result<bool, Error> {
+//         self.pop_val().map(|v| v.as_bool())
+//     }
+
+//     fn read_f64(&mut self) -> Result<f64, Error> {
+//         self.to_float("f64")
+//     }
+
+//     fn read_f32(&mut self) -> Result<f32, Error> {
+//         self.to_float("f32").map(|n| n as f32)
+//     }
+
+//     fn read_char(&mut self) -> Result<char, Error> {
+//         let (k, v) = try!(self.pop_key_val());
+//         let vstr = v.as_str();
+//         match vstr.chars().count() {
+//             1 => Ok(vstr.chars().next().unwrap()),
+//             _ => derr!("Could not decode '{}' into char for '{}'.", vstr, k),
+//         }
+//     }
+
+//     fn read_str(&mut self) -> Result<String, Error> {
+//         self.pop_val().map(|v| v.as_str().into())
+//     }
+
+//     fn read_enum<T, F>(&mut self, _: &str, f: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         f(self)
+//     }
+
+//     fn read_enum_variant<T, F>(&mut self, names: &[&str], mut f: F)
+//                               -> Result<T, Error>
+//             where F: FnMut(&mut Decoder, usize) -> Result<T, Error> {
+//         let v = to_lowercase(try!(self.pop_val()).as_str());
+//         let i =
+//             match names.iter().map(|&n| to_lowercase(n)).position(|n| n == v) {
+//                 Some(i) => i,
+//                 None => {
+//                     derr!("Could not match '{}' with any of \
+//                            the allowed variants: {:?}", v, names)
+//                 }
+//             };
+//         f(self, i)
+//     }
+
+//     fn read_enum_variant_arg<T, F>(&mut self, _: usize, _: F)
+//                                   -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_enum_struct_variant<T, F>(&mut self, _: &[&str], _: F)
+//                                      -> Result<T, Error>
+//             where F: FnMut(&mut Decoder, usize) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_enum_struct_variant_field<T, F>(&mut self, _: &str, _: usize, _: F)
+//                                            -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_struct<T, F>(&mut self, _: &str, _: usize, f: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         f(self)
+//     }
+
+//     fn read_struct_field<T, F>(&mut self, f_name: &str, _: usize, f: F)
+//                               -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         self.push(f_name);
+//         f(self)
+//     }
+
+//     fn read_tuple<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_tuple_arg<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_tuple_struct<T, F>(&mut self, _: &str, _: usize, _: F)
+//                               -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_tuple_struct_arg<T, F>(&mut self, _: usize, _: F)
+//                                   -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_option<T, F>(&mut self, mut f: F) -> Result<T, Error>
+//             where F: FnMut(&mut Decoder, bool) -> Result<T, Error> {
+//         let option =
+//             match self.stack.last() {
+//                 None => derr!("Could not decode value into unknown key."),
+//                 Some(it) => it.val.as_ref()
+//                                   .map_or(false, |v| v.as_bool())
+//             };
+//         f(self, option)
+//     }
+
+//     fn read_seq<T, F>(&mut self, f: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder, usize) -> Result<T, Error> {
+//         let it = try!(self.pop());
+//         let list = it.val.unwrap_or(List(vec!()));
+//         let vals = list.as_vec();
+//         for val in vals.iter().rev() {
+//             self.stack.push(DecoderItem {
+//                 key: it.key.clone(),
+//                 struct_field: it.struct_field.clone(),
+//                 val: Some(Plain(Some((*val).into()))),
+//             })
+//         }
+//         f(self, vals.len())
+//     }
+
+//     fn read_seq_elt<T, F>(&mut self, _: usize, f: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         f(self)
+//     }
+
+//     fn read_map<T, F>(&mut self, _: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder, usize) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_map_elt_key<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+
+//     fn read_map_elt_val<T, F>(&mut self, _: usize, _: F) -> Result<T, Error>
+//             where F: FnOnce(&mut Decoder) -> Result<T, Error> {
+//         unimplemented!()
+//     }
+// }
 
 fn to_lowercase<S: Into<String>>(s: S) -> String {
     s.into().chars().map(|c| c.to_lowercase().next().unwrap()).collect()

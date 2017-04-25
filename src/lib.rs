@@ -60,7 +60,7 @@
 //!     -a, --archive  Copy everything.
 //! ";
 //!
-//! #[derive(RustcDecodable)]
+//! #[derive(Deserialize)]
 //! struct Args {
 //!     arg_source: Vec<String>,
 //!     arg_dest: String,
@@ -109,7 +109,7 @@
 //!     --opt-level LEVEL  Optimize with possible levels 0-3.
 //! ";
 //!
-//! #[derive(RustcDecodable)]
+//! #[derive(Deserialize)]
 //! struct Args {
 //!     arg_INPUT: String,
 //!     flag_emit: Option<Emit>,
@@ -122,7 +122,7 @@
 //!
 //! // This is easy. The decoder will automatically restrict values to
 //! // strings that match one of the enum variants.
-//! #[derive(RustcDecodable)]
+//! #[derive(Deserialize)]
 //! # #[derive(Debug, PartialEq)]
 //! enum Emit { Asm, Ir, Bc, Obj, Link }
 //!
@@ -218,10 +218,13 @@
 #[macro_use]
 extern crate lazy_static;
 extern crate regex;
-extern crate rustc_serialize;
+#[macro_use]
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 extern crate strsim;
 
-pub use dopt::{ArgvMap, Decoder, Docopt, Error, Value};
+pub use dopt::{ArgvMap, Deserializer, Docopt, Error, Value};
 
 macro_rules! werr(
     ($($arg:tt)*) => ({

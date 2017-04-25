@@ -78,7 +78,7 @@ fn regression_issue_12() {
         whisper mark <file> <value>
     ";
 
-    #[derive(RustcDecodable, Debug)]
+    #[derive(Deserialize, Debug)]
     struct Args {
         arg_file: String,
         cmd_info: bool,
